@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 from functools import partial
 from typing import Callable
 
@@ -38,7 +37,7 @@ from esm.utils.generation import (
     iterative_sampling_raw,
     iterative_sampling_tokens,
 )
-from esm.utils.misc import rbf
+from esm.utils.misc import autocast_context, get_default_device, rbf
 from esm.utils.sampling import (
     _BatchedESMProteinTensor,
     get_default_sampling_config,
@@ -234,7 +233,7 @@ class ESM3(nn.Module, ESM3InferenceClient):
         if not model_name:
             raise ValueError(f"Model name {model_name} is not a valid ESM3 model name.")
         if device is None:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            device = get_default_device()
         model = load_local_model(model_name, device=device)
         if device.type != "cpu":
             model = model.to(torch.bfloat16)
@@ -533,12 +532,7 @@ class ESM3(nn.Module, ESM3InferenceClient):
             # 1.0 if all coordinates at specific indices have valid non-nan values.
             per_res_plddt = input.coordinates.isfinite().all(dim=-1).any(dim=-1).float()
 
-        with (
-            torch.no_grad(),  # Assume no gradients for now...
-            torch.autocast(enabled=True, device_type=device.type, dtype=torch.bfloat16)
-            if device.type == "cuda"
-            else contextlib.nullcontext(),
-        ):
+        with torch.no_grad(), autocast_context(device):  # Assume no gradients for now...
             output = self(
                 sequence_tokens=input.sequence,
                 structure_tokens=input.structure,

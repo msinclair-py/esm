@@ -1,0 +1,85 @@
+#!/bin/bash
+#PBS -N esmc_xpu_smoke
+#PBS -A FRAME-IDP
+#PBS -q debug
+#PBS -l select=1
+#PBS -l walltime=00:30:00
+#PBS -l filesystems=home:flare
+#PBS -l place=scatter
+#PBS -j oe
+#
+# ESMC XPU smoke test on Aurora.
+#   qsub scripts/aurora/run_esmc_smoke.pbs
+# Override the repo path / model / length without editing:
+#   qsub -v REPO=/path/to/esm,MODEL=esmc_600m,LENGTH=512 scripts/aurora/run_esmc_smoke.pbs
+#
+# Queue note: `debug` is for quick (<=1h, <=2 node) validation. Switch to `prod`
+# for longer / larger runs. `-A FRAME-IDP` is inferred from the project path; change
+# if your allocation differs.
+
+set -euo pipefail
+
+REPO="${REPO:-/lus/flare/projects/FRAME-IDP/msinclair/software/esm}"
+MODEL="${MODEL:-esmc_300m}"
+LENGTH="${LENGTH:-256}"
+
+cd "$REPO"
+
+# --- PyTorch + oneAPI/XPU stack from Aurora's module system -------------------
+module load frameworks
+
+# --- esm environment ---------------------------------------------------------
+# The bare `frameworks` module has torch+xpu but NOT esm's deps (zstd, biotite,
+# rdkit, ...). One-time setup, layered on frameworks so torch+xpu is inherited:
+#   module load frameworks
+#   scripts/aurora/setup_uv_venv.sh   # builds $REPO/.venv-aurora-uv
+# That helper installs esm + the transformers fork with --no-deps and adds only
+# the PyPI deps the frameworks module lacks (reusing system torch/numpy/scipy and
+# skipping the CUDA wheel stack). See the script header for the rationale.
+# Set VENV to activate it here (defaults to the path the helper creates).
+VENV="${VENV:-$REPO/.venv-aurora-uv}"
+if [[ -f "$VENV/bin/activate" ]]; then
+    echo "activating venv: $VENV"
+    # shellcheck disable=SC1091
+    source "$VENV/bin/activate"
+else
+    echo "NOTE: no venv at $VENV — relying on esm already being importable."
+fi
+
+# --- Make the patched working tree win over any installed wheel --------------
+# Prepending the repo root ensures the edited esm/ (xpu device + autocast fixes)
+# is imported, not a previously pip-installed copy.
+export PYTHONPATH="$REPO:${PYTHONPATH:-}"
+
+# --- Hugging Face cache (stage 2 weight download) ----------------------------
+# Cache on the parallel FS so it persists across jobs. Pre-populate from a login
+# node (which has internet) to avoid relying on the compute-node proxy:
+#   HF_HOME=$REPO/.hf_cache python -c "from esm.models.esmc import ESMC; ESMC.from_pretrained('esmc_300m', device='cpu')"
+export HF_HOME="${HF_HOME:-$REPO/.hf_cache}"
+
+# Aurora compute nodes reach the internet only via the ALCF proxy. Needed only if
+# the weights are NOT already cached in $HF_HOME. Harmless if set when cached.
+export HTTP_PROXY="http://proxy.alcf.anl.gov:3128"
+export HTTPS_PROXY="http://proxy.alcf.anl.gov:3128"
+export http_proxy="http://proxy.alcf.anl.gov:3128"
+export https_proxy="http://proxy.alcf.anl.gov:3128"
+
+# --- Device hierarchy --------------------------------------------------------
+# Aurora default is FLAT: each PVC tile is a separate 64 GB xpu device. The smoke
+# test runs on xpu:0 (one tile). To give the run the full 128 GB GPU (both tiles
+# as one device) for large-L folding, submit with COMPOSITE instead:
+#   qsub -v ... and add `export ZE_FLAT_DEVICE_HIERARCHY=COMPOSITE` here.
+echo "ZE_FLAT_DEVICE_HIERARCHY=${ZE_FLAT_DEVICE_HIERARCHY:-FLAT (default)}"
+
+# Pin to a single tile so the test is deterministic and reports one device.
+# In FLAT mode the mask is a plain device index ("0"); the "X.Y" device.subdevice
+# form is COMPOSITE-only and selects nothing under FLAT (xpu becomes unavailable).
+export ZE_AFFINITY_MASK="${ZE_AFFINITY_MASK:-0}"
+
+echo "=== job $PBS_JOBID on $(hostname) ==="
+echo "REPO=$REPO  MODEL=$MODEL  LENGTH=$LENGTH  HF_HOME=$HF_HOME"
+echo "ZE_AFFINITY_MASK=$ZE_AFFINITY_MASK"
+
+python scripts/aurora/esmc_smoke.py --model "$MODEL" --length "$LENGTH"
+
+echo "=== smoke test exit code: $? ==="

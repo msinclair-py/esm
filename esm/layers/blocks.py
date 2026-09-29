@@ -2,7 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from esm.layers.attention import FlashMultiHeadAttention, MultiHeadAttention
+from esm.layers.attention import (
+    FlashMultiHeadAttention,
+    FlexMultiHeadAttention,
+    MultiHeadAttention,
+)
 from esm.layers.geom_attention import GeometricReasoningOriginalImpl
 from esm.utils.structure.affine3d import Affine3D
 
@@ -77,6 +81,7 @@ class UnifiedTransformerBlock(nn.Module):
         use_geom_attn: bool = False,
         use_plain_attn: bool = True,
         use_flash_attn: bool = False,
+        use_flex_attn: bool = False,
         v_heads: int | None = None,
         bias: bool = False,
         expansion_ratio: float = 4.0,
@@ -86,10 +91,16 @@ class UnifiedTransformerBlock(nn.Module):
         ffn_type: str = "swiglu",  # swiglu | gelu
     ):
         super().__init__()
+        if use_flash_attn and use_flex_attn:
+            raise ValueError("use_flash_attn and use_flex_attn are mutually exclusive.")
         self.use_plain_attn = use_plain_attn
         if self.use_plain_attn:
             if use_flash_attn:
                 self.attn = FlashMultiHeadAttention(
+                    d_model, n_heads, bias, qk_layernorm=qk_layernorm
+                )
+            elif use_flex_attn:
+                self.attn = FlexMultiHeadAttention(
                     d_model, n_heads, bias, qk_layernorm=qk_layernorm
                 )
             else:

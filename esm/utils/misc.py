@@ -27,6 +27,41 @@ from esm.utils.types import FunctionAnnotation
 
 MAX_SUPPORTED_DISTANCE = 1e6
 
+# Device types that support bfloat16 autocast. CUDA is NVIDIA; "xpu" is the Intel
+# Data Center GPU Max backend (e.g. Aurora) reached via Intel Extension for PyTorch.
+_AUTOCAST_DEVICE_TYPES = ("cuda", "xpu")
+
+
+def get_default_device() -> torch.device:
+    """Pick the best available accelerator, falling back to CPU.
+
+    Prefers CUDA (NVIDIA), then XPU (Intel GPU Max / Aurora), then CPU. Callers
+    may still pass an explicit device to override this.
+    """
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch, "xpu", None) is not None and torch.xpu.is_available():
+        return torch.device("xpu")
+    return torch.device("cpu")
+
+
+def is_accelerator(device: torch.device) -> bool:
+    """Whether ``device`` is a GPU backend that supports bf16 autocast."""
+    return device.type in _AUTOCAST_DEVICE_TYPES
+
+
+def autocast_context(
+    device: torch.device, dtype: torch.dtype = torch.bfloat16
+) -> ContextManager:
+    """bf16 autocast on accelerators (CUDA/XPU), a no-op on CPU.
+
+    Mirrors the previous ``device.type == "cuda"`` gating but also covers Intel
+    XPU so models run in bf16 on Aurora instead of silently falling back to fp32.
+    """
+    if is_accelerator(device):
+        return torch.autocast(device_type=device.type, dtype=dtype, enabled=True)
+    return nullcontext()
+
 
 TSequence = TypeVar("TSequence", bound=Sequence)
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import contextlib
-
 import attr
 import torch
 import torch.nn as nn
@@ -30,7 +28,11 @@ from esm.tokenization import EsmSequenceTokenizer
 from esm.utils import encoding
 from esm.utils.constants.models import ESMC_600M
 from esm.utils.decoding import decode_sequence
-from esm.utils.misc import stack_variable_length_tensors
+from esm.utils.misc import (
+    autocast_context,
+    get_default_device,
+    stack_variable_length_tensors,
+)
 from esm.utils.sampling import _BatchedESMProteinTensor
 
 
@@ -86,7 +88,7 @@ class ESMC(nn.Module, ESMCInferenceClient):
         from esm.pretrained import load_local_model
 
         if device is None:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            device = get_default_device()
         model = load_local_model(
             model_name, device=device, use_flash_attn=use_flash_attn
         )
@@ -223,12 +225,7 @@ class ESMC(nn.Module, ESMCInferenceClient):
 
         device = torch.device(input.device)
 
-        with (
-            torch.no_grad(),
-            torch.autocast(enabled=True, device_type=device.type, dtype=torch.bfloat16)
-            if device.type == "cuda"
-            else contextlib.nullcontext(),
-        ):
+        with torch.no_grad(), autocast_context(device):
             output = self(sequence_tokens=input.sequence)
         assert output.hidden_states is not None
         output.hidden_states = (

@@ -4,7 +4,6 @@ from typing import Callable
 import torch
 import torch.nn as nn
 from accelerate import init_empty_weights
-from huggingface_hub import load_torch_model
 
 from esm.models.esm3 import ESM3
 from esm.models.esmc import ESMC
@@ -63,6 +62,60 @@ def ESM3_function_decoder_v0(device: torch.device | str = "cpu"):
     return model
 
 
+def _load_esmc_state_dict(model_key: str, device: torch.device | str):
+    """Return the esm-native ``ESMC`` state dict from an ESMC HF snapshot.
+
+    Replaces ``huggingface_hub.load_torch_model`` (broken on hub >= 0.36, which defaults
+    to safetensors + a root-level filename pattern). The ESMC repos use two different
+    layouts, so both are handled here:
+
+    * **Sharded/single safetensors at the snapshot root** (e.g. ESMC-6B):
+      ``model[-NNNNN-of-NNNNN].safetensors`` (+ ``model.safetensors.index.json``). These
+      are packaged for the transformers ``ESMCForMaskedLM`` wrapper, so keys are remapped
+      to the esm-native ``ESMC`` module: strip the ``esmc.`` submodule prefix and rename
+      the output head ``lm_head.`` -> ``sequence_head.``.
+    * **Single pickled ``.pth`` under ``data/weights/``** (e.g. ESMC-300M/600M): the same
+      layout the ESM3 builders above load explicitly.
+
+    Keys are returned so the caller's ``load_state_dict(..., assign=True)`` (strict)
+    surfaces any mismatch — unlike the old ``strict=False`` path, which would silently
+    drop the prefixed keys and leave the model on random weights.
+    """
+    root = data_root(model_key)
+
+    index = root / "model.safetensors.index.json"
+    safetensors_files = sorted(root.glob("*.safetensors"))
+    if index.exists() or safetensors_files:
+        import json
+
+        from safetensors.torch import load_file
+
+        if index.exists():
+            shards = sorted(set(json.loads(index.read_text())["weight_map"].values()))
+            safetensors_files = [root / s for s in shards]
+        state_dict: dict = {}
+        for shard in safetensors_files:
+            state_dict.update(load_file(str(shard), device="cpu"))
+
+        def _to_native(key: str) -> str:
+            # ESMCForMaskedLM module prefix -> esm-native ESMC, and head rename.
+            key = key.removeprefix("esmc.")
+            if key.startswith("lm_head."):
+                key = "sequence_head." + key[len("lm_head.") :]
+            return key
+
+        return {_to_native(k): v for k, v in state_dict.items()}
+
+    weights_dir = root / "data" / "weights"
+    pths = sorted(weights_dir.glob("*.pth"))
+    if len(pths) != 1:
+        raise FileNotFoundError(
+            f"no safetensors at {root} and expected exactly one .pth under "
+            f"{weights_dir}, found {[p.name for p in pths]}"
+        )
+    return torch.load(pths[0], map_location=device)
+
+
 def ESMC_300M_202412(device: torch.device | str = "cpu", use_flash_attn: bool = True):
     with init_empty_weights():
         model = ESMC(
@@ -72,7 +125,7 @@ def ESMC_300M_202412(device: torch.device | str = "cpu", use_flash_attn: bool = 
             tokenizer=get_esmc_model_tokenizers(),
             use_flash_attn=use_flash_attn,
         ).eval()
-    load_torch_model(model, data_root("esmc-300"))
+    model.load_state_dict(_load_esmc_state_dict("esmc-300", device), assign=True)
     model = model.to(device)
     return model
 
@@ -86,7 +139,7 @@ def ESMC_600M_202412(device: torch.device | str = "cpu", use_flash_attn: bool = 
             tokenizer=get_esmc_model_tokenizers(),
             use_flash_attn=use_flash_attn,
         ).eval()
-    load_torch_model(model, data_root("esmc-600"))
+    model.load_state_dict(_load_esmc_state_dict("esmc-600", device), assign=True)
     model = model.to(device)
     return model
 
@@ -100,7 +153,7 @@ def ESMC_6B_202412(device: torch.device | str = "cpu", use_flash_attn: bool = Tr
             tokenizer=get_esmc_model_tokenizers(),
             use_flash_attn=use_flash_attn,
         ).eval()
-    load_torch_model(model, data_root("esmc-6b"))
+    model.load_state_dict(_load_esmc_state_dict("esmc-6b", device), assign=True)
     model = model.to(device)
     return model
 

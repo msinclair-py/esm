@@ -37,6 +37,7 @@ class TransformerStack(nn.Module):
         ffn_type: str = "swiglu",  # swiglu | gelu
         expansion_ratio: float = 8 / 3,
         use_flash_attn: bool = False,
+        use_flex_attn: bool = False,
     ):
         super().__init__()
         self.blocks = nn.ModuleList(
@@ -47,6 +48,7 @@ class TransformerStack(nn.Module):
                     v_heads=v_heads,
                     use_geom_attn=i < n_layers_geom,
                     use_flash_attn=use_flash_attn,
+                    use_flex_attn=use_flex_attn,
                     residue_scaling_factor=(
                         math.sqrt(n_layers / 36) if scale_residue else 1.0
                     ),

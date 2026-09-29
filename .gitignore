@@ -3,3 +3,6 @@ esm.egg-info
 .pixi
 *.egg-info
 *.pyc
+# Aurora/XPU port: local venv + HF weight cache (multi-GB, never commit)
+.venv
+.hf_cache
